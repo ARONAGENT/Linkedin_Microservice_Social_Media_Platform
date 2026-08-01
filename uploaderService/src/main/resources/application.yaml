@@ -1,0 +1,30 @@
+spring:
+  application:
+    name: uploader-service
+
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+
+server:
+  servlet:
+    context-path: /uploads
+  port: 9050
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+
+eureka.instance.prefer-ip-address: true
+eureka.server.lease-removal-interval-in-seconds: 10
+eureka.instance.lease-expiration-duration-in-seconds: 10
+
+cloudinary:
+  cloud-name: ${name}
+  api-key: ${api_key}
+  api-secret: ${api_secret}
+
+server.error.include-message: always
+server.error.include-binding-errors: always

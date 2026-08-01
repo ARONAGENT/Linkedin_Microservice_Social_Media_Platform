@@ -1,0 +1,78 @@
+server.port: 1010
+
+jwt.secretKey: ${jwt_secretKey}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+    fetch-registry: true          # usually true
+    register-with-eureka: true    # usually true
+
+spring:
+  application.name: api-gateway
+  cloud:
+    gateway:
+      server:
+        webflux:
+          globalcors:
+            cors-configurations:
+              '[/**]':
+                allowedOrigins: "http://localhost:8080"
+                allowedMethods:
+                  - GET
+                  - POST
+                  - PUT
+                  - DELETE
+                  - OPTIONS
+                allowedHeaders: "*"
+                allowCredentials: true
+          routes:
+            - id: user-service-profile
+              uri: lb://USER-SERVICE
+              predicates:
+                - Path=/api/v1/users/profile/**
+              filters:
+                - StripPrefix=2
+                - name: AuthenticationFilter
+            # general/public route AFTER
+            - id: user-service
+              uri: lb://USER-SERVICE
+              predicates:
+                - Path=/api/v1/users/**
+              filters:
+                - StripPrefix=2
+
+            - id: posts-service
+              uri: lb://POSTS-SERVICE
+              predicates:
+                - Path=/api/v1/posts/**
+              filters:
+                - StripPrefix=2
+                - name: AuthenticationFilter
+
+            - id: connections-service
+              uri: lb://CONNECTIONS-SERVICE
+              predicates:
+                - Path=/api/v1/connections/**
+              filters:
+                - StripPrefix=2
+                - name: AuthenticationFilter
+
+            - id: notifications-service
+              uri: lb://NOTIFICATION-SERVICE
+              predicates:
+                - Path=/api/v1/notifications/**
+              filters:
+                - StripPrefix=2
+                - name: AuthenticationFilter
+
+instance:
+  prefer-ip-address: true       # Use IP instead of hostname
+  lease-removal-interval-in-seconds: 10
+  lease-expiration-duration-in-seconds: 10
+
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
