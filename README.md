@@ -313,7 +313,8 @@ GET /api/v1/notifications/{userId}
 
 **14. Frontend UI**
 
-![Frontend](./screenshots/15-frontend.png)
+<img width="1312" height="872" alt="12 Frontend view" src="https://github.com/user-attachments/assets/99b93ffb-dc5b-43d3-a405-2ca7366c6be5" />
+
 <br><br>
 
 ---
