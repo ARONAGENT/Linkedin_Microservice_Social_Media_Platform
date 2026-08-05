@@ -233,8 +233,6 @@ GET /api/v1/notifications/{userId}
 
 ## 📸 Screenshots
 
-> Replace each placeholder below with the actual GitHub-hosted link — drag each screenshot into a GitHub issue/PR markdown editor and it'll auto-generate a `user-attachments` URL like the ones used above.
-
 **1. User Login**
 
 <img width="1372" height="902" alt="1 Login" src="https://github.com/user-attachments/assets/d5a7898e-20ad-4638-b054-5b39a036342a" />
