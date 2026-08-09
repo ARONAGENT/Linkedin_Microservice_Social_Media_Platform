@@ -7,12 +7,14 @@
 [![Neo4j](https://img.shields.io/badge/Neo4j-GraphDB-008cc1.svg)](https://neo4j.com/)
 [![Kafka](https://img.shields.io/badge/Apache%20Kafka-Event%20Streaming-231f20.svg)](https://kafka.apache.org/)
 [![Eureka](https://img.shields.io/badge/Eureka%20Server-Discovery-brightgreen.svg)](https://spring.io/projects/spring-cloud-netflix)
+[![Zipkin](https://img.shields.io/badge/Zipkin-Distributed%20Tracing-FF6600.svg)](https://zipkin.io/)
+[![Micrometer](https://img.shields.io/badge/Micrometer-Observability-000000.svg)](https://micrometer.io/)
 [![Maven](https://img.shields.io/badge/Maven-3.9+-C71A36.svg)](https://maven.apache.org/)
 [![Gateway Auth](https://img.shields.io/badge/Authentication-JWT%20Gateway-green.svg)]()
 
 > "Your network is your net worth — but only if the system behind it can actually route a request."
 
-A **LinkedIn-inspired Social Networking Platform** built as a distributed microservices system with **Spring Boot** and the **Spring Cloud** ecosystem. It models real social-graph problems — first-degree and second-degree connections, posts, real-time notifications, and media uploads — on top of a **Neo4j graph database** and an **event-driven Kafka backbone**, all fronted by a single authenticated API Gateway.
+A **LinkedIn-inspired Social Networking Platform** built as a distributed microservices system with **Spring Boot** and the **Spring Cloud** ecosystem. It models real social-graph problems — first-degree and second-degree connections, posts, real-time notifications, and media uploads — on top of a **Neo4j graph database** and an **event-driven Kafka backbone**, all fronted by a single authenticated API Gateway, with **Zipkin + Micrometer** wired in for full distributed tracing.
 
 ---
 
@@ -20,7 +22,6 @@ A **LinkedIn-inspired Social Networking Platform** built as a distributed micros
 
 <!-- Replace with your architecture diagram screenshot -->
 <img width="1660" height="947" alt="ChatGPT Image Aug 2, 2026, 12_31_21 AM" src="https://github.com/user-attachments/assets/408fc6c9-cc86-4e59-82ef-a1034f47cafb" />
-
 
 The system follows a **distributed microservices architecture** — every client request enters through the API Gateway, gets authenticated once, and is routed to the appropriate downstream service via Eureka service discovery.
 
@@ -65,13 +66,62 @@ The interceptor does nothing until it's explicitly registered via `WebMvcConfigu
 
 ---
 
+## 📝 Post Creation Flow — A Look Inside
+
+Creating a post isn't a single-service write — it fans out across the system. Here's the actual flow from `PostService`:
+
+```java
+@Override
+public PostDto createPost(PostCreateRequestDto requestDto) {
+    Long userId = AuthContextHolder.getCurrentUserId(); // never trust userId from the request body
+
+    Boolean exists = userServiceClient.userExists(userId);
+    if (exists == null || !exists) {
+        throw new BadRequestException("User account not found");
+    }
+
+    List<String> imageurls = uploadImagesIfPresent(requestDto.getFiles());
+
+    Post post = new Post();
+    post.setUserId(userId);
+    post.setContent(requestDto.getContent());
+    post.setImageUrls(imageurls); // adjust to however you actually populate this
+
+    List<PersonDto> personDtoList = connectionsServiceClient.getFirstDegreeConnections();
+
+    post = postRepository.save(post);
+
+    for(PersonDto person: personDtoList) { // send notification to each connection
+        PostCreated postCreated = PostCreated.builder()
+                .postId(post.getId())
+                .content(post.getContent())
+                .userId(person.getUserId())
+                .ownerUserId(userId)
+                .build();
+        postCreatedKafkaTemplate.send("post_created_topic", postCreated);
+    }
+    return enrich(post);
+}
+```
+
+**What actually happens under the hood, per request:**
+
+1. `AuthContextHolder` — reads the trusted `userId` set by the gateway's auth filter (never trusts a userId from the request body).
+2. `user-service` (via OpenFeign) — verifies the account actually exists before writing anything.
+3. `connections-service` (via OpenFeign) — fetches the first-degree connection list for that user.
+4. `posts-service` — persists the post.
+5. `notification-service` (via Kafka, async) — one `post_created_topic` event is published **per connection**, fanning out the notification without blocking the response.
+
+This is exactly the kind of call chain that's invisible from the outside and painful to debug across five services with plain logs — which is why tracing was the next thing to build.
+
+---
+
 ## ✨ Features
 
 ### Core Microservices Features
 - 🔍 **Service Discovery** with Netflix Eureka
 - 🌐 **API Gateway** with Spring Cloud Gateway
 - 🔄 **Inter-service Communication** using OpenFeign
-- 🛡️ **Circuit Breaker Pattern** with Resilience4J
 - ⚖️ **Load Balancing** across service instances
 
 ### Social Graph Features
@@ -86,10 +136,15 @@ The interceptor does nothing until it's explicitly registered via `WebMvcConfigu
 - 🔔 **Real-time Notification Delivery** when another user interacts with your content or profile
 - 📊 **Kafbat UI** for inspecting Kafka topics, partitions, and consumer groups
 
+### Observability Features
+- 📈 **Zipkin** — distributed tracing across every service in a request's call chain (gateway → posts → user/connections/notification)
+- 📐 **Micrometer** — instrumentation layer that captures and exports trace/span data from each Spring Boot service to Zipkin
+- 🧭 **Dependency Graph View** — visualizes which services call which, generated straight from real trace data
+
 ### Media & Infrastructure
 - 📤 **Uploader Service** for media/file handling
 - 🔐 **JWT Authentication** enforced at the Gateway
-- 📈 **Distributed Tracing** with Zipkin *(coming soon)*
+- 🛡️ **Circuit Breaker Pattern** with Resilience4J *(coming soon)*
 - 📝 **Centralized Logging** with the ELK Stack *(coming soon)*
 
 ---
@@ -103,12 +158,13 @@ The interceptor does nothing until it's explicitly registered via `WebMvcConfigu
 | **Service Discovery** | Netflix Eureka | Service registration & discovery |
 | **API Gateway** | Spring Cloud Gateway | Request routing, filtering & auth |
 | **Communication** | OpenFeign | Declarative REST clients |
-| **Resilience** | Resilience4J | Circuit breaker, retry |
 | **Graph Database** | Neo4j | Social connection graph (1st/2nd degree) |
 | **Event Streaming** | Apache Kafka | Async notification delivery |
 | **Kafka Monitoring** | Kafbat UI | Topic/consumer inspection |
 | **Security** | Spring Security + JWT | Gateway-level authentication |
-| **Monitoring** | Zipkin *(planned)* | Distributed tracing |
+| **Distributed Tracing** | Zipkin | Request tracing across services |
+| **Metrics/Tracing Bridge** | Micrometer | Instruments each service and ships spans to Zipkin |
+| **Resilience** | Resilience4J *(planned)* | Circuit breaker, retry |
 | **Logging** | ELK Stack *(planned)* | Centralized logging |
 | **Build Tool** | Maven | Dependency management |
 
@@ -121,7 +177,8 @@ The interceptor does nothing until it's explicitly registered via `WebMvcConfigu
 - 📦 **Maven 3.8+**
 - 🕸️ **Neo4j** instance running
 - 📨 **Kafka** broker running
-- 🐳 *(Optional)* ELK Stack & Zipkin Server
+- 📈 **Zipkin** server running
+- 🐳 *(Optional)* ELK Stack
 
 ### Quick Start
 
@@ -165,12 +222,12 @@ The interceptor does nothing until it's explicitly registered via `WebMvcConfigu
    mvn spring-boot:run
    ```
 
-4. **Start Monitoring (Optional)**
+4. **Start Monitoring**
    ```bash
    # Start Zipkin
    java -jar zipkin-server-3.5.1-exec.jar
 
-   # Start ELK Stack
+   # Start ELK Stack (coming soon)
    for Elastic  -> run elastic.bat
    for Kibana   -> run kibana.bat
    for Logstash -> run logstash -f logstash.conf
@@ -299,17 +356,46 @@ GET /api/v1/notifications/{userId}
 
 <br><br>
 
-**12. Zipkin Tracing** *(coming soon)*
+**12. Zipkin — Trace for "Create Post" Request**
 
-![Zipkin](./screenshots/13-zipkin.png)
+<img width="1918" height="1012" alt="13   Zipkin Trace - When Post Create Api Hit" src="https://github.com/user-attachments/assets/0b15376d-4dda-4313-aaba-11918ea3e6df" />
+
+
 <br><br>
 
-**13. ELK Stack — Kibana / Elasticsearch / Logstash** *(coming soon)*
+**13. Zipkin — Dependency Graph for "Post Created"**
 
-![ELK Stack](./screenshots/14-elk-stack.png)
+<img width="1918" height="1017" alt="14  dependencies Graph Of Zipkin" src="https://github.com/user-attachments/assets/de9220a8-3a14-49a7-9e0a-e0f41cf08cca" />
+
+
 <br><br>
 
-**14. Frontend UI**
+**14. Zipkin — API Gateway Traces & Internal Posts-Service Traces**
+
+<table>
+  <tr>
+    <td align="center">
+      <img width="380" alt="Api-gateway Detail Traces" src="https://github.com/user-attachments/assets/2d826ae8-b620-4899-8bb6-474a4292f640" /><br>
+      <sub><b>API Gateway Traces</b></sub>
+    </td>
+    <td align="center">
+      <img width="380" alt="Post Service Traces When Post is Created" src="https://github.com/user-attachments/assets/aaa54e0c-c2ea-49fa-9a0e-ec6014afe193" /><br>
+      <sub><b>Posts-Service Internal Traces</b></sub>
+    </td>
+  </tr>
+</table>
+
+<br><br>
+
+<br><br>
+
+**15. ELK Stack — Kibana / Elasticsearch / Logstash** *(coming soon)*
+
+![ELK Stack](./screenshots/16-elk-stack.png)
+
+<br><br>
+
+**16. Frontend UI**
 
 <img width="1312" height="872" alt="12 Frontend view" src="https://github.com/user-attachments/assets/99b93ffb-dc5b-43d3-a405-2ca7366c6be5" />
 
@@ -325,12 +411,14 @@ This project demonstrates:
 - ✅ **Event-driven design** with Apache Kafka
 - ✅ **Gateway-centralized authentication** with JWT
 - ✅ **Service discovery & routing** with Eureka + Spring Cloud Gateway
+- ✅ **Distributed tracing** with Zipkin + Micrometer across a real multi-service call chain
 - ✅ **Distributed system** challenges and solutions
-- ☑️ Observability with Zipkin & ELK *(in progress)*
+- ☑️ Resilience patterns with Resilience4J *(in progress)*
+- ☑️ Centralized logging with ELK *(in progress)*
 
 ## 🚀 Future Enhancements
 
-- [ ] Zipkin distributed tracing integration
+- [ ] Resilience4J circuit breaker & retry integration
 - [ ] ELK stack centralized logging
 - [ ] Kubernetes deployment
 - [ ] Dockerize all services
@@ -348,6 +436,8 @@ This project demonstrates:
 
 > "Authenticate once at the door, trust everywhere inside — that's the whole philosophy of a gateway."
 
+> "You don't really know what your microservices are doing to each other until you can see the trace. Zipkin turned five black boxes into one readable timeline."
+
 ---
 
 ## 👨‍💻 Author
@@ -355,8 +445,9 @@ This project demonstrates:
 **Rohan Uke**
 Backend Developer | Java & Spring Boot Enthusiast
 
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://linkedin.com/in/rohan-uke)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/aronagent/)
 [![GitHub](https://img.shields.io/badge/GitHub-100000?style=for-the-badge&logo=github&logoColor=white)](https://github.com/ARONAGENT)
+[![Portfolio](https://img.shields.io/badge/Portfolio-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://portfolio-aronagent.onrender.com/)
 
 ---
 
@@ -369,8 +460,8 @@ Give a ⭐️ if this project helped you understand event-driven, graph-backed m
 If you have any questions or need help with the project, please:
 1. Check the **Issues** page
 2. Create a new issue if your question isn't already answered
-3. Contact me via [LinkedIn](https://linkedin.com/in/rohan-uke)
+3. Contact me via [LinkedIn](https://www.linkedin.com/in/aronagent/) or check out my [Portfolio](https://portfolio-aronagent.onrender.com/)
 
 ---
 
-*Built with ❤️ using Spring Boot, Spring Cloud, Neo4j & Apache Kafka*
+*Built with ❤️ using Spring Boot, Spring Cloud, Neo4j, Apache Kafka & Zipkin*
