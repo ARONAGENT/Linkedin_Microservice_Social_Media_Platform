@@ -28,3 +28,17 @@ cloudinary:
 
 server.error.include-message: always
 server.error.include-binding-errors: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+
+  tracing:
+    sampling:
+      probability: 1.0
+
+    export:
+      zipkin:
+        endpoint: http://localhost:9411/api/v2/spans
