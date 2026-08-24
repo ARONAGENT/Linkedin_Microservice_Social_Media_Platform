@@ -5,6 +5,7 @@ import com.aronagent.notificationService.dto.NotificationDto;
 import com.aronagent.notificationService.entity.Notification;
 import com.aronagent.notificationService.exception.ResourceNotFoundException;
 import com.aronagent.notificationService.repository.NotificationRepository;
+import io.github.resilience4j.retry.annotation.Retry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
@@ -26,6 +27,7 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     @Override
+    @Retry(name = "getNotificationsRetry",fallbackMethod = "getNotificationsFallBack")
     public List<NotificationDto> getNotifications(Long userId) {
         return notificationRepository.findByUserIdOrderByCreatedAtDesc(userId)
                 .stream()
@@ -78,5 +80,10 @@ public class NotificationServiceImpl implements NotificationService {
         NotificationDto dto = new NotificationDto();
         BeanUtils.copyProperties(n, dto);
         return dto;
+    }
+
+    public List<NotificationDto> getNotificationsFallback(Long userId, Throwable throwable) {
+        log.error("Failed to get notifications for user {} after retries. Reason: {}", userId, throwable.getMessage());
+        throw new RuntimeException("Unable to fetch notifications at the moment. Please try again later.");
     }
 }

@@ -12,7 +12,10 @@ import com.aronagent.postService.entity.Post;
 import com.aronagent.postService.event.PostCreated;
 import com.aronagent.postService.exception.BadRequestException;
 import com.aronagent.postService.repository.PostRepository;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.modelmapper.ModelMapper;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -27,6 +30,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class PostServiceImpl implements PostService {
 
     private final PostRepository postRepository;
@@ -38,6 +42,7 @@ public class PostServiceImpl implements PostService {
 
 
     @Override
+    @CircuitBreaker(name = "createPostCB", fallbackMethod = "createPostFallback")
     public PostDto createPost(PostCreateRequestDto requestDto) {
         Long userId = AuthContextHolder.getCurrentUserId(); // never trust userId from the request body
 
@@ -96,6 +101,10 @@ public class PostServiceImpl implements PostService {
     }
 
     @Override
+    @Retry(
+            name = "getPostByIdRetry",
+            fallbackMethod = "getPostByIdFallback"
+    )
     public PostDto getPostById(Long postId) {
         Post post = postRepository.findById(postId)
                 .orElseThrow(() -> new BadRequestException("Post not found"));
@@ -103,6 +112,10 @@ public class PostServiceImpl implements PostService {
     }
 
     @Override
+    @Retry(
+            name = "getAllPostsOfUserRetry",
+            fallbackMethod = "getAllPostsOfUserFallback"
+    )
     public List<PostDto> getAllPostsOfUser(Long userId) {
         List<Post> posts = postRepository.findByUserId(userId);
         return enrichAll(posts);
@@ -122,6 +135,10 @@ public class PostServiceImpl implements PostService {
     }
 
     @Override
+    @Retry(
+            name = "getAllPostsRetry",
+            fallbackMethod = "getAllPostsFallback"
+    )
     public Page<PostDto> getAllPosts(Pageable pageable) {
         Page<Post> postPage = postRepository.findAll(pageable);
 
@@ -180,5 +197,27 @@ public class PostServiceImpl implements PostService {
             }
             return dto;
         }).collect(Collectors.toList());
+    }
+
+
+    // All FallBack Methods For Posts
+    public PostDto getPostByIdFallback(Long postId, Throwable throwable) {
+        log.error("Failed to get post with id {} after retries. Reason: {}", postId, throwable.getMessage());
+        throw new RuntimeException("Unable to fetch post at the moment. Please try again later.");
+    }
+
+    public List<PostDto> getAllPostsOfUserFallback(Long userId, Throwable throwable) {
+        log.error("Failed to get posts for user {} after retries. Reason: {}", userId, throwable.getMessage());
+        throw new RuntimeException("Unable to fetch user posts at the moment. Please try again later.");
+    }
+
+    public Page<PostDto> getAllPostsFallback(Pageable pageable, Throwable throwable) {
+        log.error("Failed to get all posts after retries. Reason: {}", throwable.getMessage());
+        throw new RuntimeException("Unable to fetch posts at the moment. Please try again later.");
+    }
+
+    public PostDto createPostFallback(PostCreateRequestDto requestDto, Throwable throwable) {
+        log.error("Failed to create post. Reason: {}", throwable.getMessage());
+        throw new RuntimeException("Unable to create post at the moment. Please try again later.");
     }
 }

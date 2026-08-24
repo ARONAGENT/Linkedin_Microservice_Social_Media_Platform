@@ -11,6 +11,14 @@ management:
       exposure:
         include: "*"
 
+  endpoint:
+    health:
+      show-details: always
+
+  health:
+    circuitbreakers:
+      enabled: true
+
   tracing:
     sampling:
       probability: 1.0
@@ -18,3 +26,63 @@ management:
     export:
       zipkin:
         endpoint: http://localhost:9411/api/v2/spans
+
+
+# ============================================================
+# RESILIENCE4J
+# ============================================================
+
+resilience4j:
+
+  # ==========================================================
+  # RETRY
+  # ==========================================================
+
+  retry:
+    instances:
+
+      # GET /posts/{postId}
+      getPostByIdRetry:
+        max-attempts: 3
+        wait-duration: 500ms
+        retry-exceptions:
+          - java.lang.Exception
+        ignore-exceptions:
+          - com.aronagent.postService.exception.BadRequestException
+
+      # GET /posts/user/{userId}
+      getAllPostsOfUserRetry:
+        max-attempts: 3
+        wait-duration: 500ms
+        retry-exceptions:
+          - java.lang.Exception
+        ignore-exceptions:
+          - com.aronagent.postService.exception.BadRequestException
+
+      # GET /posts
+      getAllPostsRetry:
+        max-attempts: 3
+        wait-duration: 500ms
+        retry-exceptions:
+          - java.lang.Exception
+        ignore-exceptions:
+          - com.aronagent.postService.exception.BadRequestException
+
+
+  # ==========================================================
+  # CIRCUIT BREAKER
+  # ==========================================================
+
+  circuitbreaker:
+    instances:
+      createPostCB:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 2s
+        slow-call-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        register-health-indicator: true
