@@ -9,12 +9,13 @@
 [![Eureka](https://img.shields.io/badge/Eureka%20Server-Discovery-brightgreen.svg)](https://spring.io/projects/spring-cloud-netflix)
 [![Zipkin](https://img.shields.io/badge/Zipkin-Distributed%20Tracing-FF6600.svg)](https://zipkin.io/)
 [![Micrometer](https://img.shields.io/badge/Micrometer-Observability-000000.svg)](https://micrometer.io/)
+[![Resilience4J](https://img.shields.io/badge/Resilience4J-Fault%20Tolerance-6DB33F.svg)](https://resilience4j.readme.io/)
 [![Maven](https://img.shields.io/badge/Maven-3.9+-C71A36.svg)](https://maven.apache.org/)
 [![Gateway Auth](https://img.shields.io/badge/Authentication-JWT%20Gateway-green.svg)]()
 
 > "Your network is your net worth — but only if the system behind it can actually route a request."
 
-A **LinkedIn-inspired Social Networking Platform** built as a distributed microservices system with **Spring Boot** and the **Spring Cloud** ecosystem. It models real social-graph problems — first-degree and second-degree connections, posts, real-time notifications, and media uploads — on top of a **Neo4j graph database** and an **event-driven Kafka backbone**, all fronted by a single authenticated API Gateway, with **Zipkin + Micrometer** wired in for full distributed tracing.
+A **LinkedIn-inspired Social Networking Platform** built as a distributed microservices system with **Spring Boot** and the **Spring Cloud** ecosystem. It models real social-graph problems — first-degree and second-degree connections, posts, real-time notifications, and media uploads — on top of a **Neo4j graph database** and an **event-driven Kafka backbone**, all fronted by a single authenticated API Gateway, with **Zipkin + Micrometer** wired in for full distributed tracing and **Resilience4J** wired in so individual service slowdowns don't cascade across the system.
 
 ---
 
@@ -108,11 +109,33 @@ public PostDto createPost(PostCreateRequestDto requestDto) {
 
 1. `AuthContextHolder` — reads the trusted `userId` set by the gateway's auth filter (never trusts a userId from the request body).
 2. `user-service` (via OpenFeign) — verifies the account actually exists before writing anything.
-3. `connections-service` (via OpenFeign) — fetches the first-degree connection list for that user.
-4. `posts-service` — persists the post.
-5. `notification-service` (via Kafka, async) — one `post_created_topic` event is published **per connection**, fanning out the notification without blocking the response.
+3. `uploader-service` (via OpenFeign, only when the post includes images) — uploads media before the post is persisted.
+4. `connections-service` (via OpenFeign) — fetches the first-degree connection list for that user.
+5. `posts-service` — persists the post.
+6. `notification-service` (via Kafka, async) — one `post_created_topic` event is published **per connection**, fanning out the notification without blocking the response.
 
-This is exactly the kind of call chain that's invisible from the outside and painful to debug across five services with plain logs — which is why tracing was the next thing to build.
+This is exactly the kind of call chain that's invisible from the outside and painful to debug across five services with plain logs — which is why tracing was the next thing to build, and exactly why it's also the riskiest call in the system from a resilience standpoint (see below).
+
+---
+
+## 🛡️ Resilience4J — Failing Gracefully
+
+Tracing showed *where* a request goes. Resilience4J is about making sure a slow or failing dependency along that path doesn't take the rest of the system down with it. Rather than wrapping every call in the same blanket policy, each endpoint gets the pattern that actually matches its failure mode:
+
+### 1. Circuit Breaker on Create Post
+`createPost` is the riskiest call in the system, because of what it triggers internally: a call out to **connections-service** to build the notification fan-out list, and — whenever the post includes an image — a call out to **uploader-service** before the post is even saved. If either of those dependencies gets slow or goes down, that shouldn't be able to hang or take down Create Post along with it. A **Circuit Breaker** watches the failure/slow-call rate on that chain and trips open once it crosses the configured threshold, short-circuiting further calls immediately (instead of letting them queue up and time out) and periodically probing the dependency again to see if it's recovered.
+
+### 2. Retry on Get Post
+Get Post is a simple downstream read — the likely failure mode is a short, transient blip, not a structural outage. A **Retry** policy re-attempts the call a configured number of times (with backoff) before surfacing an error, so a one-off hiccup doesn't turn into a failed request for the user.
+
+### 3. Retry on Get Notifications
+Same reasoning applied to `notification-service`: fetching notifications is a lightweight read, so a **Retry** policy is the right tool — no need for the overhead of a circuit breaker on a call this low-risk.
+
+| Endpoint | Pattern | Why |
+|---|---|---|
+| `POST /api/v1/posts/create` | Circuit Breaker | Fans out to connections-service (always) and uploader-service (if the post has images) — cascading-failure risk |
+| `GET /api/v1/posts/{id}` | Retry | Simple read, transient-failure risk only |
+| `GET /api/v1/notifications/{userId}` | Retry | Simple read, transient-failure risk only |
 
 ---
 
@@ -141,11 +164,16 @@ This is exactly the kind of call chain that's invisible from the outside and pai
 - 📐 **Micrometer** — instrumentation layer that captures and exports trace/span data from each Spring Boot service to Zipkin
 - 🧭 **Dependency Graph View** — visualizes which services call which, generated straight from real trace data
 
+### Resilience Features
+- 🛡️ **Circuit Breaker** on Create Post — protects against cascading failures from connections-service / uploader-service
+- 🔁 **Retry** on Get Post — absorbs transient read failures with backoff
+- 🔁 **Retry** on Get Notifications — absorbs transient read failures with backoff
+
 ### Media & Infrastructure
 - 📤 **Uploader Service** for media/file handling
 - 🔐 **JWT Authentication** enforced at the Gateway
-- 🛡️ **Circuit Breaker Pattern** with Resilience4J *(coming soon)*
 - 📝 **Centralized Logging** with the ELK Stack *(coming soon)*
+- 🚦 **Rate Limiter + Redis** at the API Gateway *(coming soon)*
 
 ---
 
@@ -164,7 +192,8 @@ This is exactly the kind of call chain that's invisible from the outside and pai
 | **Security** | Spring Security + JWT | Gateway-level authentication |
 | **Distributed Tracing** | Zipkin | Request tracing across services |
 | **Metrics/Tracing Bridge** | Micrometer | Instruments each service and ships spans to Zipkin |
-| **Resilience** | Resilience4J *(planned)* | Circuit breaker, retry |
+| **Resilience** | Resilience4J | Circuit Breaker (Create Post) + Retry (Get Post, Get Notifications) |
+| **Rate Limiting** | Redis *(planned)* | Gateway-level rate limiting |
 | **Logging** | ELK Stack *(planned)* | Centralized logging |
 | **Build Tool** | Maven | Dependency management |
 
@@ -241,9 +270,9 @@ This is exactly the kind of call chain that's invisible from the outside and pai
 |---------|------|---------|
 | **API Gateway** | `1010` | Single entry point, routing & JWT auth filter |
 | **User Service** | `9020` | Signup/login, profiles, identity |
-| **Posts Service** | `9010` | Create & fetch posts |
+| **Posts Service** | `9010` | Create & fetch posts (Circuit Breaker + Retry) |
 | **Connections Service** | `9030` | 1st/2nd-degree connection graph (Neo4j) |
-| **Notification Service** | `9040` | Kafka-driven real-time notifications |
+| **Notification Service** | `9040` | Kafka-driven real-time notifications (Retry on fetch) |
 | **Uploader Service** | `9050` | Media/file upload handling |
 
 ### Eureka Dashboard — Registered Instances
@@ -360,13 +389,11 @@ GET /api/v1/notifications/{userId}
 
 <img width="1918" height="1012" alt="13   Zipkin Trace - When Post Create Api Hit" src="https://github.com/user-attachments/assets/0b15376d-4dda-4313-aaba-11918ea3e6df" />
 
-
 <br><br>
 
 **13. Zipkin — Dependency Graph for "Post Created"**
 
 <img width="1918" height="1017" alt="14  dependencies Graph Of Zipkin" src="https://github.com/user-attachments/assets/de9220a8-3a14-49a7-9e0a-e0f41cf08cca" />
-
 
 <br><br>
 
@@ -387,15 +414,39 @@ GET /api/v1/notifications/{userId}
 
 <br><br>
 
+**15. Resilience4J — Circuit Breaker on Create Post**
+*(shows the breaker tripping/half-open behavior when connections-service or uploader-service is unavailable)*
+
+<!-- Add screenshot: circuit breaker state/metrics for the Create Post endpoint -->
+<img width="1385" height="817" alt="17 Circuit Breaker for Post" src="https://github.com/user-attachments/assets/a9665271-af33-4716-ab3a-ef22a16bbdf0" />
+
 <br><br>
 
-**15. ELK Stack — Kibana / Elasticsearch / Logstash** *(coming soon)*
+**16. Resilience4J — Retry on Get Post**
+*(shows retry attempts/backoff kicking in on a transient failure)*
+
+<!-- Add screenshot: retry attempts for the Get Post endpoint -->
+<img width="1240" height="533" alt="18 Retries for Post Services" src="https://github.com/user-attachments/assets/b0403a42-7f16-47b3-ad5c-97fa5186710e" />
+
+
+<br><br>
+
+**17. Resilience4J — Retry on Get Notifications**
+*(shows retry attempts/backoff kicking in on a transient failure)*
+
+<!-- Add screenshot: retry attempts for the Get Notifications endpoint -->
+<img width="1390" height="555" alt="19 Retries for Notification Service " src="https://github.com/user-attachments/assets/710afc16-5481-4110-8b90-3460f520b6a0" />
+
+
+<br><br>
+
+**18. ELK Stack — Kibana / Elasticsearch / Logstash** *(coming soon)*
 
 ![ELK Stack](./screenshots/16-elk-stack.png)
 
 <br><br>
 
-**16. Frontend UI**
+**19. Frontend UI**
 
 <img width="1312" height="872" alt="12 Frontend view" src="https://github.com/user-attachments/assets/99b93ffb-dc5b-43d3-a405-2ca7366c6be5" />
 
@@ -412,13 +463,14 @@ This project demonstrates:
 - ✅ **Gateway-centralized authentication** with JWT
 - ✅ **Service discovery & routing** with Eureka + Spring Cloud Gateway
 - ✅ **Distributed tracing** with Zipkin + Micrometer across a real multi-service call chain
+- ✅ **Fault tolerance** with Resilience4J — matching Circuit Breaker vs. Retry to each endpoint's actual failure mode
 - ✅ **Distributed system** challenges and solutions
-- ☑️ Resilience patterns with Resilience4J *(in progress)*
+- ☑️ Rate limiting with Redis at the API Gateway *(in progress)*
 - ☑️ Centralized logging with ELK *(in progress)*
 
 ## 🚀 Future Enhancements
 
-- [ ] Resilience4J circuit breaker & retry integration
+- [ ] Rate Limiter + Redis at the API Gateway level
 - [ ] ELK stack centralized logging
 - [ ] Kubernetes deployment
 - [ ] Dockerize all services
@@ -438,6 +490,8 @@ This project demonstrates:
 
 > "You don't really know what your microservices are doing to each other until you can see the trace. Zipkin turned five black boxes into one readable timeline."
 
+> "Tracing tells you where a request went. Resilience4J decides what happens when part of that path stops cooperating."
+
 ---
 
 ## 👨‍💻 Author
@@ -453,7 +507,7 @@ Backend Developer | Java & Spring Boot Enthusiast
 
 ## ⭐ Show your support
 
-Give a ⭐️ if this project helped you understand event-driven, graph-backed microservices architecture!
+Give a ⭐️ if this project helped you understand event-driven, graph-backed, resilient microservices architecture!
 
 ## 📞 Support
 
@@ -464,4 +518,4 @@ If you have any questions or need help with the project, please:
 
 ---
 
-*Built with ❤️ using Spring Boot, Spring Cloud, Neo4j, Apache Kafka & Zipkin*
+*Built with ❤️ using Spring Boot, Spring Cloud, Neo4j, Apache Kafka, Zipkin & Resilience4J*
